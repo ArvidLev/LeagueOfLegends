@@ -1,0 +1,169 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+```{r}
+#setwd("~/R projects/League")
+library(tidyverse)
+library(skimr)
+library(tidymodels)
+library(caret)
+```
+
+```{r}
+data <- read_csv("league.csv")
+head(data)
+```
+I am not interested in the data of every region.
+I only want the data from NA, EU, KR and CH
+```{r}
+table(data$league)
+leagues <- c("LPL", "LCS", "LCK", "LEC")
+data <- data %>%
+  filter(league %in% leagues)
+```
+
+```{r}
+table(data$datacompleteness)
+names(data)
+```
+Now I am going to split the data into 2 datasets. One with player data and one with team data.
+
+```{r}
+team_data <- data %>%
+  filter(position == "team")
+
+player_data <- data %>%
+  filter(position != "team")
+
+```
+
+Lets fix some of the columns in team_data
+```{r}
+team_data$result <- factor(team_data$result, labels = c("Lost", "Won"))
+team_data$firstbaron <- factor(team_data$firstbaron, labels = c( "No First Baron", "First Baron"))
+team_data$firstblood <- factor(team_data$firstblood, labels = c("No First Kill", "First Kill"))
+team_data$firstdragon <- factor(team_data$firstdragon, labels = c("No First Dragon", "First Dragon"))
+team_data$firstherald <- factor(team_data$firstherald, labels = c("No First Herald", "First Herald"))
+team_data$firstmidtower <- factor(team_data$firstmidtower, labels = c( "No First Midtower", "First Midtower"))
+```
+
+Now lets see how getting this objective affect the chances of winning the game.
+```{r}
+ggplot(data = team_data %>% filter(!is.na(firstblood), !is.na(firstbaron), !is.na(firstherald))
+       , aes(x = result, fill = result)) +
+  geom_bar() +
+  facet_grid(~ firstblood + firstbaron + firstherald, scale = "free") +
+  theme(strip.text.x = element_text(size = 6.375))
+```
+Definitely seems like these factors decide the outcome of the game. The first baron seem to be the most important facctor of them. It also seems like they are quite correlated since the number of games where one team has all them is quite a lot more than the number of game where they are split between teams.
+
+
+Lets see if the getting firsttblood has a different effect on winning the game depending on the region and also get an idea on how it affects the outcome of a game by itself.
+```{r}
+ggplot(data = team_data %>% filter(!is.na(firstblood)), 
+       aes(y = result, 
+           x = factor(firstblood),
+           fill = factor(firstblood))) +
+  geom_bar(stat = "identity") +
+  scale_x_discrete(labels = c("No Firstblood", "Firstblood")) +
+  scale_fill_discrete("",label = c("No Firstblood", "Firstblood")) +
+  xlab("") +
+  facet_wrap(~league, scales = "free") +
+  ylab("Number of wins")
+  
+  
+```
+
+Lets check the first baron's affect on the chances of winning by region.
+```{r}
+ggplot(data = team_data %>% filter(!is.na(firstbaron)),
+       aes(x = factor(firstbaron),
+           y = result,
+           fill = factor(firstbaron))) +
+  geom_bar(stat = "identity") +
+  ylab("Number of Wins") +
+  xlab("") +
+  scale_fill_discrete("", label = c("Not First Baron", "First Baron")) +
+  facet_wrap(~league, scale = "free") 
+```
+
+Here, I want to look at if there is a difference in game length for the different regions.
+```{r}
+ggplot(data = team_data, aes(x = factor(league), y = gamelength/60, fill = factor(league))) +
+  geom_boxplot() +
+  ylab("Game Length Minutes") +
+  xlab("") +
+  scale_fill_discrete("League")
+```
+Lets look at the difference in game length between the teams in the LCS.
+```{r}
+ggplot(data = team_data %>% filter(league == "LCS"), aes(x = factor(team), y = gamelength/60, fill = factor(team))) +
+  geom_boxplot() +
+  ylab("Game Length Minutes") +
+  xlab("") +
+  scale_fill_discrete("LCS Teams") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+```
+
+
+Now when I have looked at some of the variables in the data set and I want to try to predict the outcomes of the games given the data.
+
+First, I split the data into a training and testing set so that I can test the performance of the model
+```{r}
+split <- initial_split(team_data, prop = 0.8, strata = result)
+train <- training(split)
+test <- testing(split)
+```
+
+
+First I will create a recipe about how to deal with the data and which variables I want to use. The only preprocessing required is removing rows that contains missing values which is fine since I have so many samples.
+```{r}
+team_rec <- recipe(result ~ firstbaron + firstblood + firstherald + firstmidtower + firstdragon,
+                   data = team_data) %>%
+  step_naomit(all_predictors()) %>%
+  step_naomit(all_outcomes(), skip = TRUE)
+  
+  
+```
+
+For creating a model I am looking for an interpretable model so that I can understand the data better. Therefore, I am going to use a logistic regression model.
+
+I am not going to try to fix the parameters of the model.
+```{r}
+log_model <- logistic_reg()
+```
+
+
+```{r}
+team_wf <- workflow() %>%
+  add_model(log_model) %>%
+  add_recipe(team_rec)
+
+```
+
+Since we are removing rows that contain NA we need to have a preproccesed test set to compare our results with
+```{r}
+log_rec_prep <- prep(team_rec)
+test1 <- bake(log_rec_prep, new_data = test)
+```
+
+
+
+```{r}
+log_fit <- fit(team_wf, data = train)
+log_pred <- predict(log_fit, new_data = test)
+confusionMatrix(data = log_pred$.pred_class, 
+                reference = test1$result)
+
+```
+Here we see that with this simple model with very few variables we can get good results.
+Lets see how our model used the variables to predict.
+```{r}
+log_fit
+```
+Here we see that the model says that first baron was the most valued predictor for the result of the game and after that first mid tower was the most valued predictor. We can also see that first herald is not a valued predictor
